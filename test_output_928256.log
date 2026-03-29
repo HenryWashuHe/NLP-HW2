@@ -1,0 +1,162 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_loads_and_forward_pass PASSED                    [100%]
+
+============================== 1 passed in 20.00s ==============================
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_probability_tolerance PASSED                     [100%]
+
+============================== 1 passed in 19.26s ==============================
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_greedy_sampling PASSED                           [100%]
+
+============================== 1 passed in 46.24s ==============================
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_nucleus_sampling FAILED                          [100%]
+
+=================================== FAILURES ===================================
+____________________________ test_nucleus_sampling _____________________________
+
+hf_model = GPT2LMHeadModel(
+  (transformer): GPT2Model(
+    (wte): Embedding(50257, 768)
+    (wpe): Embedding(1024, 768)
+    (dro...((768,), eps=1e-05, elementwise_affine=True)
+  )
+  (lm_head): Linear(in_features=768, out_features=50257, bias=False)
+)
+custom_model = GPT2LMHeadModel(
+  (wte): Embedding(50257, 768)
+  (wpe): Embedding(1024, 768)
+  (ln_f): LayerNorm((768,), eps=1e-05, e... Dropout(p=0.1, inplace=False)
+      )
+    )
+  )
+  (lm_head): Linear(in_features=768, out_features=50257, bias=False)
+)
+sample_data = [[13924, 12, 559, 12, 35784, 11, ...], [14282, 7705, 286, 1181, 5073, 2605, ...], [464, 9317, 6241, 416, 5721, 1023, ....79, 15567, 318, 530, 286, ...], [32971, 12248, 3548, 0, 314, 760, ...], [32, 18192, 34678, 9118, 286, 39716, ...], ...]
+device = 'cuda', batch_size = 16, prefill_tokens = 128, gen_tokens = 128
+temperature = 0.7, top_p = 0.95
+
+    def test_nucleus_sampling(
+        hf_model, custom_model, sample_data, device, batch_size,
+        prefill_tokens, gen_tokens, temperature, top_p
+    ):
+        """
+        Test that nucleus sampling generates plausible tokens for all samples.
+    
+        This test:
+        1. Asserts all samples have at least `prefill_tokens` tokens
+        2. Processes all samples in batches
+        3. Uses first `prefill_tokens` tokens as prompt
+        4. Generates `gen_tokens` tokens using nucleus sampling (temperature, top_p)
+        5. Makes ONE HF forward pass with the full sequences (prefill + generated)
+        6. For each position, computes HF logits with temperature scaling
+        7. Applies top-p filtering to get the nucleus set and verifies the generated token
+    
+        This ensures the student's nucleus sampling implementation actually restricts
+        sampling to the top-p cumulative probability mass.
+        """
+        # Assert all samples have at least prefill_tokens
+        # (sample_data is already padded to max_length, so we check original content)
+        for i, tokens in enumerate(sample_data):
+            # Find actual length (before padding with 0s)
+            actual_len = len([t for t in tokens if t != 0]) if 0 in tokens else len(tokens)
+            assert actual_len >= prefill_tokens, (
+                f"Sample {i+1} has {actual_len} tokens, but needs at least {prefill_tokens}"
+            )
+    
+        for batch_idx, batch in enumerate(batch_generator(sample_data, batch_size)):
+            # Prepare batch: take first prefill_tokens from each sample
+            prompt_batch = [tokens[:prefill_tokens] for tokens in batch]
+    
+            input_ids = torch.tensor(prompt_batch, dtype=torch.long, device=device)
+    
+            # Generate using custom implementation with nucleus sampling
+            with torch.no_grad():
+                custom_output = custom_model.generate(
+                    input_ids.clone(),
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_new_tokens=gen_tokens
+                )
+    
+            # Get generated sequences for this batch
+            generated_sequences = custom_output.sequences  # [batch_size, seq_len]
+            batch_size_actual = generated_sequences.shape[0]
+    
+            # Make ONE HF forward pass with the full sequences
+            with torch.no_grad():
+                hf_logits = hf_model(generated_sequences).logits  # [batch_size, total_len, vocab_size]
+    
+            # Verify each generated token position
+            # We check positions prefill_tokens to total_len-1 (the generated tokens)
+            for step in range(gen_tokens):
+                position = prefill_tokens + step  # Position in the sequence (0-indexed)
+    
+                # Get logits for this position from all samples
+                # hf_logits[:, position-1, :] gives logits for predicting position-th token
+                # (since logits are shifted by 1 - logits at position i predict token i+1)
+                next_token_logits = hf_logits[:, position - 1, :]  # [batch_size, vocab_size]
+    
+                # Apply temperature scaling
+                scaled_logits = next_token_logits / temperature
+    
+                # Compute probabilities for all samples at once
+                probs = F.softmax(scaled_logits, dim=-1)  # [batch_size, vocab_size]
+    
+                # Apply top-p filtering logic to find the nucleus set for each sample
+                sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+    
+                # Find tokens in the nucleus for each sample (cumulative prob <= top_p)
+                nucleus_mask = cumulative_probs <= top_p
+                # Always include the top token for each sample
+                nucleus_mask[:, 0] = True
+    
+                # For each sample in the batch, verify the generated token is in its nucleus
+                for i in range(batch_size_actual):
+                    sample_idx = batch_idx * batch_size + i
+                    gen_token = generated_sequences[i, position].item()
+    
+                    # Get the nucleus tokens for this sample
+                    sample_nucleus_mask = nucleus_mask[i]
+                    sample_sorted_indices = sorted_indices[i]
+                    nucleus_tokens = sample_sorted_indices[sample_nucleus_mask].tolist()
+    
+                    # Verify the generated token is in the nucleus set
+>                   assert gen_token in nucleus_tokens, (
+                        f"Sample {sample_idx+1}, position {position}: "
+                        f"Generated token {gen_token} is not in the nucleus set. "
+                        f"Nucleus contains {len(nucleus_tokens)} tokens with cumulative prob <= {top_p}. "
+                        f"Token probability: {probs[i, gen_token].item():.6f}"
+                    )
+E                   AssertionError: Sample 12, position 132: Generated token 345 is not in the nucleus set. Nucleus contains 3 tokens with cumulative prob <= 0.95. Token probability: 0.038513
+E                   assert 345 in [465, 514, 262]
+
+tests/hw2_test.py:446: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Step 0: ids_to_pass shape=torch.Size([16, 128]), past=None
+Step 1: ids_to_pass shape=torch.Size([16, 1]), past=exists
+=========================== short test summary info ============================
+FAILED tests/hw2_test.py::test_nucleus_sampling - AssertionError: Sample 12, ...
+============================== 1 failed in 19.58s ==============================

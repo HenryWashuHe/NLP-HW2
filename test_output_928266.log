@@ -1,0 +1,36 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_loads_and_forward_pass PASSED                    [100%]
+
+============================== 1 passed in 19.89s ==============================
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_probability_tolerance PASSED                     [100%]
+
+============================== 1 passed in 18.94s ==============================
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_greedy_sampling PASSED                           [100%]
+
+============================== 1 passed in 33.51s ==============================
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_nucleus_sampling PASSED                          [100%]
+
+============================== 1 passed in 36.37s ==============================

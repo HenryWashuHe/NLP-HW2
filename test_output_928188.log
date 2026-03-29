@@ -1,0 +1,7 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.2, pytest-9.0.1, pluggy-1.6.0 -- /mnt/home/cjs2301/hw2/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /mnt/home/cjs2301/hw2
+collecting ... collected 1 item
+
+tests/hw2_test.py::test_loads_and_forward_pass 

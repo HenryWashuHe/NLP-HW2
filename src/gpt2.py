@@ -49,6 +49,7 @@ class GPT2Config:
 class CausalLMOutput:
     """Output class for causal language modeling. Contains the logits for all input tokens."""
     logits: Tensor
+    past_key_values: Optional[List[Tuple[Tensor, Tensor]]] = None
 
 
 @dataclass
@@ -68,62 +69,69 @@ class MultiHeadAttention(nn.Module):
         # W_Q --> d_model x d_model Q = W_Q^T x X = B x T x d_k
         self.config =  config
         #Q, K, V matrix and output matrix that project back to d_model
-        self.W_Q = nn.Linear(config.d_model, config.d_model, bias = True)
-        self.W_K = nn.Linear(config.d_model, config.d_model, bias = True)
-        self.W_V = nn.Linear(config.d_model, config.d_model, bias = True)
-        self.W_O = nn.Linear(config.d_model, config.d_model, bias = True)
+        self.c_attn = nn.Linear(config.d_model, 3 * config.d_model, bias=True)
+        self.c_proj = nn.Linear(config.d_model, config.d_model, bias = True)
         # implement a dropout layer. Zero-out p percentage of values, help with regularization
         # no effect during forward pass.
-        self.DropOut = nn.Dropout(p = 0.1)
+        self.dropout = nn.Dropout(p = 0.1)
         mask = torch.tril(torch.ones(config.max_ctx_len, config.max_ctx_len)) # create a low_triangular matrix with 1s
-        self.register_buffer('mask', mask)
+        self.register_buffer('bias', mask.view(1, 1, config.max_ctx_len, config.max_ctx_len))
+        # and update forward accordingly
     def forward(
             self,
-            hidden_states: Tensor
+            hidden_states: Tensor,
+            past_key_values: Optional[Tuple[Tensor, Tensor]] = None
                 ):
-        Q = self.W_Q(hidden_states) #(batch, seq_len, d_model)
-        K = self.W_K(hidden_states)
-        V = self.W_V(hidden_states)
-        B, T, _ = hidden_states.shape # (batch_size, Seq_length)
-        # split d_model into n_heads and d_head
-        Q = Q.view(B, T, self.config.n_head, self.config.d_head).transpose(1,2)
-        K = K.view(B, T, self.config.n_head, self.config.d_head).transpose(1,2)
-        V = V.view(B, T, self.config.n_head, self.config.d_head).transpose(1,2)
+        B, T, _ = hidden_states.shape  # (batch_size, Seq_length)
+        qkv = self.c_attn(hidden_states)
+        Q, K, V = qkv.split(self.config.d_model, dim=-1)
+        Q = Q.view(B, T, self.config.n_head, self.config.d_head).transpose(1, 2)
+        K = K.view(B, T, self.config.n_head, self.config.d_head).transpose(1, 2)
+        V = V.view(B, T, self.config.n_head, self.config.d_head).transpose(1, 2)
+        if past_key_values is not None:
+            K = torch.cat([past_key_values[0],K], dim = 2)
+            V = torch.cat([past_key_values[1],V], dim = 2)
+        T_full = K.shape[2]
+        Q_len = Q.shape[2]
         scores = Q @ K.transpose(-2,-1) / math.sqrt(self.config.d_head)
-        mask = self.mask[:T,:T] # only need the sequence length for the mask
+        q_start = T_full - Q_len
+        mask = self.bias[0, 0, q_start:q_start + Q_len, :T_full] # only need the sequence length for the mask
         scores = scores.masked_fill(mask == 0, float('-inf')) # mask the scores
         attn_weights = torch.softmax(scores, dim=-1)
         values = attn_weights @ V
-        values = self.DropOut(values)
+        values = self.dropout(values)
         values = values.transpose(1, 2)  # → (batch, seq_len, n_heads, d_head)
-        values = values.contiguous().view(B, T, self.config.d_model)  # → (batch, seq_len, d_model)
-        return self.W_O(values)
+        values = values.contiguous().view(B, -1, self.config.d_model)  # → (batch, seq_len, d_model)
+        return self.c_proj(values), (K, V)
 class Multi_Layer_Perceptron(nn.Module):
     def __init__(self, config: GPT2Config = GPT2Config()):
         super().__init__()
         self.config = config
-        self.Linear_1 = nn.Linear(config.d_model, config.d_mlp_intermediate)
-        self.Linear_2 = nn.Linear(config.d_mlp_intermediate, config.d_model)
-        self.DropOut = nn.Dropout(p = 0.1)
+        self.c_fc = nn.Linear(self.config.d_model, self.config.d_mlp_intermediate)
+        self.c_proj = nn.Linear(self.config.d_mlp_intermediate, self.config.d_model)
+        self.dropout = nn.Dropout(p = 0.1)
     def forward(
             self,
             x: Tensor):
-        intermediate = self.Linear_1(x)
+        intermediate = self.c_fc(x)
         act = F.gelu(intermediate,approximate = 'tanh')
-        return self.DropOut(self.Linear_2(act))
+        return self.dropout(self.c_proj(act))
 class GPT2TransformerBlock(nn.Module):
     def __init__(self, config: GPT2Config = GPT2Config()):
         super().__init__()
         self.config = config
-        self.layerNorm_1 = nn.LayerNorm(config.d_model)
-        self.layerNorm_2 = nn.LayerNorm(config.d_model)
-        self.DropOut = nn.Dropout(p = 0.1)
-        self.attention = MultiHeadAttention(config)
+        self.ln_1 = nn.LayerNorm(config.d_model)
+        self.ln_2 = nn.LayerNorm(config.d_model)
+        self.dropout = nn.Dropout(p = 0.1)
+        self.attn = MultiHeadAttention(config)
         self.mlp = Multi_Layer_Perceptron(config)
-    def forward(self, x: Tensor):
-        x = x + self.DropOut(self.attention(self.layerNorm_1(x)))
-        x = x + self.mlp(self.layerNorm_2(x))
-        return x
+    def forward(self,
+                x: Tensor,
+                past_key_values : Optional[Tuple[Tensor, Tensor]] = None ):
+        attn_out, new_kv = self.attn(self.ln_1(x), past_key_values)
+        x = x + self.dropout(attn_out)
+        x = x + self.mlp(self.ln_2(x))
+        return x, new_kv
 class GPT2LMHeadModel(nn.Module):
     """
     GPT-2 Language Model with a language modeling head.
@@ -147,17 +155,23 @@ class GPT2LMHeadModel(nn.Module):
         # and initialize the model with random weights.
         self.config = config
         #initliaze context and positionl embeddings with uniform distribution. Dimension |V| x d_model and max_ctx_len x d_model
-        self.contextEmbeddings = nn.Embedding(self.config.vocab_size,self.config.d_model)
-        self.positionalEmbeddings = nn.Embedding(self.config.max_ctx_len, self.config.d_model)
-        nn.init.uniform_(self.contextEmbeddings.weight,a = -0.1, b = 0.1)
-        nn.init.uniform_(self.positionalEmbeddings.weight,a = -0.1, b = 0.1) 
-        self.layer_norm = nn.LayerNorm(self.config.d_model)
-        self.blocks = nn.ModuleList([GPT2TransformerBlock(config) for _ in range(config.n_layer)])
+        self.wte = nn.Embedding(self.config.vocab_size,self.config.d_model)
+        self.wpe = nn.Embedding(self.config.max_ctx_len, self.config.d_model)
+        self.ln_f = nn.LayerNorm(self.config.d_model)
+        self.h = nn.ModuleList([GPT2TransformerBlock(config) for _ in range(config.n_layer)])
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-        self.lm_head.weight = self.contextEmbeddings.weight
+        self.lm_head.weight = self.wte.weight
         #load weights if bin_path is provided.
         if bin_path:
-            self.load_state_dict(torch.load(bin_path))
+            checkpoint = torch.load(bin_path)
+            transposed = ['attn.c_attn.weight', 'attn.c_proj.weight',
+                          'mlp.c_fc.weight', 'mlp.c_proj.weight']
+
+            checkpoint = {
+                k: v.t() if any(k.endswith(t) for t in transposed) else v
+                for k, v in checkpoint.items()
+            }
+            self.load_state_dict(checkpoint, strict=False)
 
     def forward(
         self, 
@@ -178,10 +192,21 @@ class GPT2LMHeadModel(nn.Module):
         # The forward pass should compute the output logits for all input tokens,
         # and also update the cached attention keys and values in place (reference passing) 
         # if `past_key_values` is provided.
-
-        
-        
-        return CausalLMOutput(logits=logits)
+        #input_ids --> (batch_size, seq_len)
+        B, T = input_ids.shape
+        ctx_embd = self.wte(input_ids) # match input_ids to embeddings.
+        past_len = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+        positions = torch.arange(past_len, past_len + T, device=input_ids.device) # create position indices [0, 1, 2, ..., seq_len-1]
+        pos_embd = self.wpe(positions)
+        inputs = ctx_embd + pos_embd
+        new_kv_cache = []
+        for i, block in enumerate(self.h):
+            old_kv_cache = past_key_values[i] if past_key_values is not None else None
+            inputs, new_kv = block(inputs, old_kv_cache)
+            new_kv_cache.append(new_kv)
+        inputs = self.ln_f(inputs)
+        logits = self.lm_head(inputs)
+        return CausalLMOutput(logits=logits, past_key_values = new_kv_cache)
         
     def generate(
         self,
@@ -209,7 +234,29 @@ class GPT2LMHeadModel(nn.Module):
         # GPT-2 does not have a stop token,
         # so you should always generate `max_new_tokens` new tokens 
         # for all the input sequences in the batch.
-        
+        self.eval()
+        with torch.no_grad():
+            past_key_values = None
+            for step in range(max_new_tokens):
+                ids_to_pass = input_ids if past_key_values is None else next_token
+                if step < 2:
+                    print(f"Step {step}: ids_to_pass shape={ids_to_pass.shape}, past={'None' if past_key_values is None else 'exists'}")
+                output = self.forward(ids_to_pass, past_key_values)
+                past_key_values = output.past_key_values
+                logits = output.logits #(batch, seq_length, d_vocab)
+                last_tkn = logits[:, -1,:]
+                if temperature == 0.0:
+                    next_token = torch.argmax(last_tkn, dim=-1, keepdim=True)
+                else:
+                    probs = torch.softmax(last_tkn / temperature, dim=-1)
+                #nucleus sampling here.
+                    sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+                    cumSum = torch.cumsum(sorted_probs, dim=-1)
+                    sorted_probs[cumSum > top_p] = 0  # zero where cumsum > top_p
+                    sorted_probs[:, 0] = sorted_probs[:, 0].clamp(min=1e-9)  # always keep top
+                    sampled = torch.multinomial(sorted_probs, num_samples = 1)
+                    next_token = sorted_indices.gather(-1, sampled)
+                input_ids = torch.cat([input_ids, next_token], dim=1)
         return ModelOutput(sequences=input_ids)
 
 
@@ -269,3 +316,4 @@ class GPT2ForSequenceClassification(nn.Module):
         # and the logits contain the classification scores for each label class.
         
         return SequenceClassifierOutput(logits=logits)
+
