@@ -239,8 +239,6 @@ class GPT2LMHeadModel(nn.Module):
             past_key_values = None
             for step in range(max_new_tokens):
                 ids_to_pass = input_ids if past_key_values is None else next_token
-                if step < 2:
-                    print(f"Step {step}: ids_to_pass shape={ids_to_pass.shape}, past={'None' if past_key_values is None else 'exists'}")
                 output = self.forward(ids_to_pass, past_key_values)
                 past_key_values = output.past_key_values
                 logits = output.logits #(batch, seq_length, d_vocab)
@@ -289,7 +287,6 @@ class GPT2ForSequenceClassification(nn.Module):
                     or loaded from `classifier_bin_path` if provided.
         """
         super().__init__()
-
         # Only one of `classifier_bin_path` and `lm_bin_path` can be provided.
         assert not (classifier_bin_path and lm_bin_path), \
             "Only one of `classifier_bin_path` and `lm_bin_path` can be provided."
@@ -298,7 +295,13 @@ class GPT2ForSequenceClassification(nn.Module):
         # You can reuse the GPT2LMHeadModel defined above as the base model,
         # and add a classification head on top of it.
         # You should also reuse GPT2LMHeadModel's weights to speed up training if possible.
-
+        self.config = config
+        self.base_model = GPT2LMHeadModel(config) # reuse the base_model developped earlier
+        self.classifier = nn.Linear(self.config.d_model, self.config.num_labels)
+        if lm_bin_path is not None:
+            self.base_model = GPT2LMHeadModel(config, bin_path=lm_bin_path)
+        if classifier_bin_path is not None:
+            self.load_state_dict(torch.load(classifier_bin_path))
     def forward(self, input_ids: Tensor) -> SequenceClassifierOutput:
         """
         Forward pass of GPT-2 for classification.
@@ -314,6 +317,12 @@ class GPT2ForSequenceClassification(nn.Module):
         # The output logits should be of shape (batch_size, num_labels),
         # where num_labels is specified in the GPT2Config,
         # and the logits contain the classification scores for each label class.
-        
+        x = self.base_model.wte(input_ids) + self.base_model.wpe(torch.arange(input_ids.shape[1], device=input_ids.device)) # hidden_states
+        # pass through all transformer block
+        for block in self.base_model.h:
+            x, _ = block(x)
+        x = self.base_model.ln_f(x)
+        last_token = x[:, -1, :] # take the embeddings of the last token
+        logits = self.classifier(last_token)
         return SequenceClassifierOutput(logits=logits)
 
