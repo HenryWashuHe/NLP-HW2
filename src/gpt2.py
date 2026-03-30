@@ -325,4 +325,3 @@ class GPT2ForSequenceClassification(nn.Module):
         last_token = x[:, -1, :] # take the embeddings of the last token
         logits = self.classifier(last_token)
         return SequenceClassifierOutput(logits=logits)
-

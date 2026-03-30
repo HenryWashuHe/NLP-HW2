@@ -15,6 +15,8 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from gpt2 import GPT2ForSequenceClassification, GPT2Config
+from torch.utils.tensorboard import SummaryWriter
+
 
 class NewsGroupDataset(Dataset):
     def __init__(self, data_path, max_length=512):
@@ -45,7 +47,12 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch_size", type=int, default=8)
     args = parser.parse_args()
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+    else:
+        device = 'cpu'
     #load training_data
     train_dataset = NewsGroupDataset(args.train_data_path)
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
@@ -59,6 +66,11 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr) # optimizer for gradient descent.
     loss_fn = nn.CrossEntropyLoss() #loss function
     best_accuracy = 0
+    # before epoch loop
+    writer = SummaryWriter()
+    global_step = 0
+    print(f"Loading model from: {args.bin_path}")
+    print(f"File exists: {os.path.exists(args.bin_path)}")
     for epoch in range(args.epochs):
         model.train()
         total_loss = 0
@@ -68,6 +80,8 @@ if __name__ == "__main__":
             output = model(input_ids)
             logits = output.logits
             loss = loss_fn(logits, labels) #compute loss
+            writer.add_scalar('Loss/train', loss.item(), global_step)
+            global_step += 1
             optimizer.zero_grad() # zero out old gradients
             loss.backward() # do backward pass
             optimizer.step() #gradient descent
@@ -77,7 +91,7 @@ if __name__ == "__main__":
 
         avg_loss = total_loss / len(train_dataloader)
         print(f"Epoch {epoch + 1} complete | Avg Loss: {avg_loss:.4f}")
-            # after each epoch's training loop
+        # after each epoch's training loop
         model.eval()
         correct = 0
         total = 0
@@ -95,8 +109,10 @@ if __name__ == "__main__":
 
         accuracy = correct / total
         print(f"Epoch {epoch + 1} | Val Accuracy: {accuracy:.4f} ({accuracy * 100:.2f}%)")
-            # save best model
+        # save best model
         if accuracy > best_accuracy:
             best_accuracy = accuracy
-            torch.save(model.state_dict(), 'best_classifier.pth')
+            torch.save(model.state_dict(), 'checkpoints/classifier_model.pth')
             print(f"New best model saved! Accuracy: {accuracy:.4f}")
+        writer.add_scalar('Accuracy/val', accuracy, epoch)
+    writer.close()
