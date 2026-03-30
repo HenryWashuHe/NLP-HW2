@@ -301,7 +301,7 @@ class GPT2ForSequenceClassification(nn.Module):
         if lm_bin_path is not None:
             self.base_model = GPT2LMHeadModel(config, bin_path=lm_bin_path)
         if classifier_bin_path is not None:
-            self.load_state_dict(torch.load(classifier_bin_path))
+            self.load_state_dict(torch.load(classifier_bin_path, map_location='cpu'))
     def forward(self, input_ids: Tensor) -> SequenceClassifierOutput:
         """
         Forward pass of GPT-2 for classification.
